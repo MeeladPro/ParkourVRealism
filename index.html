@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Parkour 150</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #1a1a1a;
+            color: #ffffff;
+            font-family: 'Courier New', Courier, monospace;
+            overflow: hidden;
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 20px;
+            color: #00ff88;
+            text-shadow: 0 0 10px #00ff88;
+        }
+
+        #game-container {
+            position: relative;
+            border: 2px solid #00ff88;
+            box-shadow: 0 0 20px #00ff88;
+            border-radius: 10px;
+            overflow: hidden;
+        }
+
+        canvas {
+            background-color: #000000;
+            display: block;
+        }
+
+        #message-box {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: rgba(0, 0, 0, 0.8);
+            padding: 20px 40px;
+            border: 2px solid #ff00ff;
+            border-radius: 10px;
+            text-align: center;
+            font-size: 1.5rem;
+            box-shadow: 0 0 20px #ff00ff;
+            display: none;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        #message-box button {
+            background-color: #00ff88;
+            color: #1a1a1a;
+            border: none;
+            padding: 10px 20px;
+            font-size: 1rem;
+            font-family: 'Courier New', Courier, monospace;
+            cursor: pointer;
+            border-radius: 5px;
+            transition: background-color 0.3s;
+        }
+
+        #message-box button:hover {
+            background-color: #00cc66;
+        }
+
+        #level-display {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            font-size: 1.2rem;
+            color: #ffffff;
+        }
+    </style>
+</head>
+<body>
+    <h1>Parkour 150</h1>
+    <div id="game-container">
+        <canvas id="gameCanvas"></canvas>
+        <div id="level-display">Level: 1</div>
+        <div id="message-box">
+            <span id="message-text"></span>
+            <button onclick="resetGame()">Restart Game</button>
+        </div>
+    </div>
+
+    <script type="module">
+        // --- Firebase Configuration & Setup ---
+        // DO NOT EDIT - These variables are provided by the canvas environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // Import Firebase libraries from CDN
+        // These are imported directly in the HTML to ensure they are available
+        import { initializeApp, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        let app;
+        let auth;
+        let db;
+        let userId;
+
+        // Initialize Firebase and authenticate user
+        async function initializeFirebase() {
+            if (firebaseConfig) {
+                app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+                setLogLevel('debug'); // Added for debugging
+                
+                try {
+                    if (initialAuthToken) {
+                        await signInWithCustomToken(auth, initialAuthToken);
+                        console.log("Signed in with custom token.");
+                    } else {
+                        await signInAnonymously(auth);
+                        console.log("Signed in anonymously.");
+                    }
+                    userId = auth.currentUser.uid;
+                    console.log("User ID:", userId);
+                    loadGameState();
+                } catch (error) {
+                    console.error("Firebase authentication failed:", error);
+                    userId = null;
+                }
+            } else {
+                console.warn("Firebase configuration not found. Game state will not be saved.");
+                userId = crypto.randomUUID();
+            }
+        }
+        
+        // --- Game Setup ---
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const messageBox = document.getElementById('message-box');
+        const messageText = document.getElementById('message-text');
+        const levelDisplay = document.getElementById('level-display');
+
+        // Set canvas dimensions based on window size
+        const CANVAS_WIDTH = window.innerWidth > 800 ? 800 : window.innerWidth * 0.9;
+        const CANVAS_HEIGHT = window.innerHeight > 600 ? 600 : window.innerHeight * 0.8;
+        canvas.width = CANVAS_WIDTH;
+        canvas.height = CANVAS_HEIGHT;
+
+        // Game state variables
+        const TOTAL_LEVELS = 3; // Now using hard-coded levels
+        let currentLevel = 1;
+        let levels = [];
+
+        // Player properties
+        let player = {
+            x: 0,
+            y: 0,
+            width: 20,
+            height: 20,
+            vx: 0,
+            vy: 0,
+            speed: 5,
+            jumpStrength: 15,
+            isJumping: false,
+            onGround: false,
+            color: '#ffffff'
+        };
+
+        // Keyboard input
+        const keys = {
+            left: false,
+            right: false,
+            up: false
+        };
+
+        const gravity = 0.5;
+        let animationFrameId;
+
+        // --- Level Generation and Storage ---
+        function generateLevels() {
+            // Hard-coded levels
+            levels = [
+                // Level 1: Simple introduction
+                {
+                    platforms: [
+                        { x: 0, y: CANVAS_HEIGHT - 30, width: CANVAS_WIDTH, height: 30, color: '#333333' },
+                        { x: 50, y: CANVAS_HEIGHT - 100, width: 100, height: 20, color: '#ff6347' },
+                        { x: 250, y: CANVAS_HEIGHT - 180, width: 150, height: 20, color: '#333333' },
+                        { x: 500, y: CANVAS_HEIGHT - 120, width: 100, height: 20, color: '#333333' }
+                    ],
+                    goal: { x: 550, y: CANVAS_HEIGHT - 170, width: 50, height: 50, color: '#00ff88' }
+                },
+                // Level 2: More jumps and varying platform heights
+                {
+                    platforms: [
+                        { x: 0, y: CANVAS_HEIGHT - 30, width: CANVAS_WIDTH, height: 30, color: '#333333' },
+                        { x: 50, y: CANVAS_HEIGHT - 100, width: 100, height: 20, color: '#ff6347' },
+                        { x: 200, y: CANVAS_HEIGHT - 150, width: 80, height: 20, color: '#333333' },
+                        { x: 350, y: CANVAS_HEIGHT - 220, width: 100, height: 20, color: '#333333' },
+                        { x: 500, y: CANVAS_HEIGHT - 180, width: 120, height: 20, color: '#333333' }
+                    ],
+                    goal: { x: 520, y: CANVAS_HEIGHT - 230, width: 50, height: 50, color: '#00ff88' }
+                },
+                // Level 3: A long jump
+                {
+                    platforms: [
+                        { x: 0, y: CANVAS_HEIGHT - 30, width: CANVAS_WIDTH, height: 30, color: '#333333' },
+                        { x: 50, y: CANVAS_HEIGHT - 100, width: 100, height: 20, color: '#ff6347' },
+                        { x: 300, y: CANVAS_HEIGHT - 100, width: 80, height: 20, color: '#333333' },
+                        { x: 550, y: CANVAS_HEIGHT - 100, width: 100, height: 20, color: '#333333' }
+                    ],
+                    goal: { x: 575, y: CANVAS_HEIGHT - 150, width: 50, height: 50, color: '#00ff88' }
+                }
+                // Add more levels here! Just copy and paste the above structure.
+            ];
+        }
+
+        // --- Game State Management ---
+        function resetPlayer() {
+            const startPlatform = levels[currentLevel - 1].platforms.find(p => p.color === '#ff6347');
+            if (startPlatform) {
+                player.x = startPlatform.x + startPlatform.width / 2 - player.width / 2;
+                player.y = startPlatform.y - player.height;
+            } else {
+                player.x = 50;
+                player.y = CANVAS_HEIGHT - 100 - player.height;
+            }
+            player.vx = 0;
+            player.vy = 0;
+            player.onGround = false;
+        }
+
+        function nextLevel() {
+            if (currentLevel < TOTAL_LEVELS) {
+                currentLevel++;
+                levelDisplay.textContent = `Level: ${currentLevel}`;
+                resetPlayer();
+                saveGameState();
+            } else {
+                endGame(true);
+            }
+        }
+
+        function endGame(won) {
+            cancelAnimationFrame(animationFrameId);
+            messageBox.style.display = 'flex';
+            if (won) {
+                messageText.textContent = "Congratulations! You completed all the levels!";
+            } else {
+                messageText.textContent = "Game Over! You fell off the map.";
+            }
+        }
+
+        function resetGame() {
+            currentLevel = 1;
+            levelDisplay.textContent = `Level: ${currentLevel}`;
+            resetPlayer();
+            messageBox.style.display = 'none';
+            saveGameState();
+            startGame();
+        }
+
+        // --- Firebase Integration ---
+        async function saveGameState() {
+            if (!db || !userId) {
+                console.log("Not saving game state. Firebase is not initialized or user is not authenticated.");
+                return;
+            }
+            const docRef = doc(db, `artifacts/${appId}/users/${userId}/game_state`, 'parkour_state');
+            try {
+                await setDoc(docRef, { currentLevel });
+                console.log("Game state saved successfully.");
+            } catch (e) {
+                console.error("Error saving document:", e);
+            }
+        }
+
+        async function loadGameState() {
+            if (!db || !userId) return;
+            const docRef = doc(db, `artifacts/${appId}/users/${userId}/game_state`, 'parkour_state');
+            try {
+                const docSnap = await getDoc(docRef);
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    currentLevel = data.currentLevel;
+                    levelDisplay.textContent = `Level: ${currentLevel}`;
+                    console.log("Game state loaded successfully. Current level:", currentLevel);
+                } else {
+                    console.log("No game state found, starting from level 1.");
+                }
+            } catch (e) {
+                console.error("Error loading document:", e);
+            }
+            // Now that we've loaded the state, start the game
+            resetPlayer();
+            startGame();
+        }
+
+        // --- Game Logic ---
+        function update() {
+            // Apply gravity
+            player.vy += gravity;
+
+            // Apply horizontal movement
+            player.vx = 0;
+            if (keys.left) player.vx = -player.speed;
+            if (keys.right) player.vx = player.speed;
+
+            // Player position update
+            player.x += player.vx;
+            player.y += player.vy;
+
+            // Get current level's platforms and goal
+            const { platforms, goal } = levels[currentLevel - 1];
+
+            // Collision detection with platforms
+            player.onGround = false;
+            for (const platform of platforms) {
+                if (
+                    player.x < platform.x + platform.width &&
+                    player.x + player.width > platform.x &&
+                    player.y < platform.y + platform.height &&
+                    player.y + player.height > platform.y
+                ) {
+                    // Collision detected
+                    const prevY = player.y - player.vy;
+                    const prevX = player.x - player.vx;
+
+                    // Vertical collision (top)
+                    if (prevY + player.height <= platform.y) {
+                        player.vy = 0;
+                        player.y = platform.y - player.height;
+                        player.onGround = true;
+                    }
+                    // Vertical collision (bottom)
+                    else if (prevY >= platform.y + platform.height) {
+                        player.vy = 0;
+                        player.y = platform.y + platform.height;
+                    }
+                    // Horizontal collision
+                    else if (prevX + player.width <= platform.x) {
+                        player.x = platform.x + player.width;
+                        player.vx = 0;
+                    } else if (prevX >= platform.x + platform.width) {
+                        player.x = platform.x + platform.width;
+                        player.vx = 0;
+                    }
+                }
+            }
+
+            // Check for goal collision
+            if (
+                player.x < goal.x + goal.width &&
+                player.x + player.width > goal.x &&
+                player.y < goal.y + goal.height &&
+                player.y + player.height > goal.y
+            ) {
+                nextLevel();
+            }
+
+            // Boundary check and game over
+            if (player.y > CANVAS_HEIGHT) {
+                endGame(false);
+            }
+        }
+
+        function draw() {
+            // Clear canvas
+            ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+            // Draw platforms
+            const { platforms, goal } = levels[currentLevel - 1];
+            for (const platform of platforms) {
+                ctx.fillStyle = platform.color;
+                ctx.fillRect(platform.x, platform.y, platform.width, platform.height);
+            }
+
+            // Draw goal
+            ctx.fillStyle = goal.color;
+            ctx.fillRect(goal.x, goal.y, goal.width, goal.height);
+
+            // Draw player
+            ctx.fillStyle = player.color;
+            ctx.fillRect(player.x, player.y, player.width, player.height);
+        }
+
+        function gameLoop() {
+            update();
+            draw();
+            animationFrameId = requestAnimationFrame(gameLoop);
+        }
+
+        // --- Event Listeners ---
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowLeft') {
+                keys.left = true;
+            } else if (e.key === 'ArrowRight') {
+                keys.right = true;
+            } else if (e.key === 'ArrowUp') {
+                if (player.onGround) {
+                    player.vy = -player.jumpStrength;
+                    player.onGround = false;
+                }
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            if (e.key === 'ArrowLeft') {
+                keys.left = false;
+            } else if (e.key === 'ArrowRight') {
+                keys.right = false;
+            }
+        });
+
+        // --- Initialization ---
+        function startGame() {
+            // Only start the loop if it's not already running
+            if (!animationFrameId) {
+                gameLoop();
+            }
+        }
+
+        window.onload = function () {
+            generateLevels();
+            initializeFirebase();
+        };
+
+    </script>
+</body>
+</html>
